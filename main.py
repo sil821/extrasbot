@@ -18,20 +18,19 @@ import telebot
 # ------------------------------------------------------------
 #  LECTURA DE VARIABLES DE ENTORNO (todas desde Railway)
 # ------------------------------------------------------------
-def get_env(name):
+def get_env_var(name):
     value = os.environ.get(name)
     if value is None:
-        print(f"❌ ERROR: Variable de entorno '{name}' no definida.")
+        print(f"❌ ERROR: Falta la variable de entorno '{name}'")
         sys.exit(1)
     return value
 
-API_ID = int(get_env("API_ID"))
-API_HASH = get_env("API_HASH")
-BOT_TOKEN = get_env("BOT_TOKEN")
-CHANNEL_ID = int(get_env("CHANNEL_ID"))
-PHONE_NUMBER = get_env("PHONE_NUMBER")
-SESSION_STRING = os.environ.get("SESSION_STRING", None)  # Puede ser None al principio
-
+API_ID = int(get_env_var("API_ID"))
+API_HASH = get_env_var("API_HASH")
+BOT_TOKEN = get_env_var("BOT_TOKEN")
+CHANNEL_ID = int(get_env_var("CHANNEL_ID"))
+PHONE_NUMBER = get_env_var("PHONE_NUMBER")
+SESSION_STRING = get_env_var("SESSION_STRING")  # OBLIGATORIA
 PUBLICATION_DELAY = float(os.environ.get("PUBLICATION_DELAY_SECONDS", 5))
 
 # ------------------------------------------------------------
@@ -196,35 +195,17 @@ async def main():
     aiohttp_session = aiohttp.ClientSession()
     last_publication_time = time.monotonic()
 
-    # Crear cliente Telethon con sesión persistente (StringSession)
-    if SESSION_STRING:
-        client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
-        print("✅ Usando SESSION_STRING guardada.")
-    else:
-        # Si no hay SESSION_STRING, usamos una sesión nueva (solo para obtener la cadena localmente)
-        client = TelegramClient("extras", API_ID, API_HASH)
-        print("⚠️  No se encontró SESSION_STRING. Se generará una nueva sesión.")
-        print("   Después de iniciar sesión, copia la cadena de los logs y ponla en Railway.")
+    # Usar StringSession con la variable de entorno
+    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+    print("✅ Usando SESSION_STRING de variables de entorno.")
 
     # Registrar el manejador de eventos
     client.add_event_handler(card_handler, events.NewMessage())
     client.add_event_handler(card_handler, events.MessageEdited())
 
     try:
-        # Iniciar sesión
         await client.start(phone=PHONE_NUMBER)
         print("✅ Cliente Telethon conectado.")
-
-        # Si no había SESSION_STRING, mostrar la cadena para guardarla
-        if not SESSION_STRING:
-            session_str = client.session.save()
-            print("\n" + "="*70)
-            print("🔑 GUARDA ESTA CADENA EN LA VARIABLE DE ENTORNO 'SESSION_STRING':")
-            print(session_str)
-            print("="*70 + "\n")
-            print("📌 En Railway: ve a Variables y añade SESSION_STRING con este valor.")
-            print("📌 Luego redeploy para que el bot use la sesión persistente.\n")
-
         print("📡 Escuchando mensajes...")
         await client.run_until_disconnected()
 
