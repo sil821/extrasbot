@@ -1,27 +1,51 @@
-from telethon.sync import TelegramClient, events
-from telethon.errors.rpcerrorlist import PhoneNumberBannedError
-
+import os
+import sys
+import re
+import random
 import time
-import re, requests, random
 import asyncio
-import aiohttp 
-import collections 
-import datetime 
+import aiohttp
+import collections
+import datetime
 
-# Importamos los tipos de botones de telebot correctamente
+from telethon import TelegramClient, events
+from telethon.errors.rpcerrorlist import PhoneNumberBannedError
+from telethon.sessions import StringSession
+
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
-import telebot 
-API_ID = int(os.environ["API_ID"])
-API_HASH = os.environ["API_HASH"]
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+import telebot
 
-# Token/API URL del bot
-api_url = f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage'
+# ------------------------------------------------------------
+#  LECTURA DE VARIABLES DE ENTORNO (obligatorias)
+# ------------------------------------------------------------
+def get_env_var(name):
+    value = os.environ.get(name)
+    if value is None:
+        print(f"❌ ERROR: Falta la variable de entorno '{name}'")
+        sys.exit(1)
+    return value
 
-# Número utilizado por la sesión de Telethon
-number = '+584123889230'
+API_ID = int(get_env_var("API_ID"))
+API_HASH = get_env_var("API_HASH")
+BOT_TOKEN = get_env_var("BOT_TOKEN")
+CHANNEL_ID = int(get_env_var("CHANNEL_ID"))
+PHONE_NUMBER = get_env_var("PHONE_NUMBER")
+PUBLICATION_DELAY = float(os.environ.get("PUBLICATION_DELAY_SECONDS", 5))
 
-images_url = [
+# SESSION_STRING es OBLIGATORIA en Railway (la obtendrás localmente)
+SESSION_STRING = os.environ.get("SESSION_STRING", None)
+if not SESSION_STRING:
+    print("⚠️  SESSION_STRING no configurada. Se generará una nueva sesión.")
+    print("   Después de la primera ejecución, copia la cadena de los logs")
+    print("   y pégala como variable de entorno SESSION_STRING para futuros reinicios.\n")
+
+# ------------------------------------------------------------
+#  INICIALIZACIÓN
+# ------------------------------------------------------------
+bot = telebot.TeleBot(BOT_TOKEN)
+PROCESSED_CARD_NUMBERS = collections.deque(maxlen=1000)
+
+IMAGES_URL = [
     'https://i.pinimg.com/736x/4c/e0/6f/4ce06fcebb0a04d909aa1576ec95873f.jpg',
     'https://i.pinimg.com/736x/77/5c/cf/775ccf064684a7ea0f886b4a47fd23aa.jpg',
     'https://i.pinimg.com/736x/06/55/9b/06559b97ced10e030c88b4028890f7d9.jpg',
@@ -29,38 +53,13 @@ images_url = [
     'https://i.pinimg.com/736x/bb/95/bc/bb95bc1086d690e9be03b31e18d15a29.jpg'
 ]
 
-CHANNEL_ID = -1003472563721
-
-# Inicializamos el bot de telebot
-bot = telebot.TeleBot(BOT_TOKEN)
-
-# Caché para evitar duplicados
-PROCESSED_CARD_NUMBERS = collections.deque(maxlen=1000)
-
-# Inicializar el cliente de Telethon usando la sesión "extras.session"
-client = TelegramClient("extras", API_ID, API_HASH)
-
-# Sesión persistente para aiohttp
 aiohttp_session = None
-
-# --- Control de velocidad ---
-
 publication_lock = asyncio.Lock()
 last_publication_time = 0.0
 
-PUBLICATION_DELAY_SECONDS = 5
-# --- NUEVAS VARIABLES PARA CONTROL DE VELOCIDAD ---
-# Lock para asegurar que solo una publicación se procese a la vez
-publication_lock = asyncio.Lock() 
-# Tiempo de la última publicación para calcular el retraso necesario
-last_publication_time = 0.0 
-
-# Tiempo de espera entre publicaciones (en segundos)
-# Aumentado a 15 segundos para empezar. Ajusta si es necesario.
-PUBLICATION_DELAY_SECONDS = 5
-
-
-# --- Funciones Auxiliares (tu lógica de enmascaramiento, sin cambios) ---
+# ------------------------------------------------------------
+#  FUNCIONES AUXILIARES
+# ------------------------------------------------------------
 def process_card_masking(card_info: str, match: re.Match, mask_type: int):
     processed_card = ""
     expiration_month = match.group(2)
@@ -77,183 +76,170 @@ def process_card_masking(card_info: str, match: re.Match, mask_type: int):
         expiration_month = str(random.randint(1, 12)).zfill(2)
         expiration_year = str(random.randint(2025, 2032))
     elif mask_type == 5:
-        processed_card = card_info[:6] +'x' + str(random.randint(10, 99)) + 'x' + str(random.randint(100, 999)) + 'xxx'
+        processed_card = card_info[:6] + 'x' + str(random.randint(10, 99)) + 'x' + str(random.randint(100, 999)) + 'xxx'
         expiration_month = str(random.randint(1, 12)).zfill(2)
         expiration_year = str(random.randint(2025, 2032))
-    elif mask_type == 6:
+    elif mask_type in (6, 7, 8):
         processed_card = card_info[:9] + str(random.randint(100, 999)) + 'xxxx'
         expiration_month = str(random.randint(1, 12)).zfill(2)
         expiration_year = str(random.randint(2025, 2032))
-    elif mask_type == 7:
-        processed_card = card_info[:9] + str(random.randint(100, 999)) + 'xxxx'
-        expiration_month = str(random.randint(1, 12)).zfill(2)
-        expiration_year = str(random.randint(2025, 2032))
-    elif mask_type == 8:
-        processed_card = card_info[:9] + str(random.randint(100, 999)) + 'xxxx'
-        expiration_month = str(random.randint(1, 12)).zfill(2)
-        expiration_year = str(random.randint(2025, 2032))
-    
+
     return processed_card, expiration_month, expiration_year
 
+# ------------------------------------------------------------
+#  MANEJADOR DE EVENTOS
+# ------------------------------------------------------------
+async def card_handler(event):
+    global last_publication_time
 
-# --- Manejador de Eventos de Telethon (asíncrono) ---
-@client.on(events.NewMessage())
-@client.on(events.MessageEdited())
-async def handler(event):
-    global last_publication_time # Accedemos a la variable global
-
-    current_time_str = datetime.datetime.now().strftime("%H:%M:%S") 
+    current_time_str = datetime.datetime.now().strftime("%H:%M:%S")
 
     if event.is_private:
         chat_name = 'Chat privado'
     elif event.is_group:
-        chat_name = 'Grupo: {}'.format(event.chat.title)
+        chat_name = f'Grupo: {event.chat.title}'
     else:
-        chat_name = 'Canal: {}'.format(event.chat.title)
+        chat_name = f'Canal: {event.chat.title}'
 
-    message_get = event.message.message.upper()
+    message_text = event.message.message.upper()
     regex = r'(\d{14,16})\|(\d{1,2})\|(\d{2,4})\|(\d{3,4})'
+    match = re.search(regex, message_text)
 
-    match = re.search(regex, message_get)
+    if not match:
+        return
 
-    if match: 
-        cc = match.group(1) 
+    cc = match.group(1)
 
-        # Verificación de duplicados
-        if cc in PROCESSED_CARD_NUMBERS:
-            print(f"[{current_time_str}] [{chat_name}] Tarjeta {cc} ya procesada. Ignorando mensaje para evitar duplicados.")
-            return 
-        
-        PROCESSED_CARD_NUMBERS.append(cc)
-        print(f"[{current_time_str}] [{chat_name}] Nueva tarjeta detectada y añadiendo a la caché: {cc}")
+    if cc in PROCESSED_CARD_NUMBERS:
+        print(f"[{current_time_str}] [{chat_name}] Tarjeta {cc} ya procesada. Ignorando.")
+        return
 
-        mes = match.group(2)
-        years = match.group(3)
-        cvv = match.group(4)
+    PROCESSED_CARD_NUMBERS.append(cc)
+    print(f"[{current_time_str}] [{chat_name}] Nueva tarjeta: {cc}")
 
-        message_gei = re.sub(regex, r'<code>\g<0></code>', message_get)
-        payload = {
-            'chat_id': CHANNEL_ID, 
-            'text': message_gei,
-            'parse_mode': 'HTML'
-        }
+    mes = match.group(2)
+    years = match.group(3)
+    cvv = match.group(4)
+    card_info = match.group(0)
 
-        card_info = match.group(0)
-        
-        rs = {}
-        try:
-            async with aiohttp_session.get(f"https://bins.antipublic.cc/bins/{card_info[:6]}") as resp:
-                resp.raise_for_status()
-                rs = await resp.json()
+    # Obtener información del BIN
+    bin_info = {"brand": "N/A", "type": "N/A", "level": "N/A",
+                "bank": "N/A", "country_name": "N/A", "country_flag": ""}
+    try:
+        async with aiohttp_session.get(f"https://bins.antipublic.cc/bins/{cc[:6]}") as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            bin_info.update(data)
+    except Exception as e:
+        print(f"[{current_time_str}] Error al obtener BIN: {e}")
 
-        except aiohttp.ClientError as e:
-            print(f"[{current_time_str}] Error al obtener información del BIN: {e}")
-            rs = {"brand": "N/A", "type": "N/A", "level": "N/A", "bank": "N/A", "country_name": "N/A", "country_flag": ""}
-        except ValueError as e:
-            print(f"[{current_time_str}] Error al decodificar JSON del BIN: {e}")
-            rs = {"brand": "N/A", "type": "N/A", "level": "N/A", "bank": "N/A", "country_name": "N/A", "country_flag": ""}
+    # Generar 8 enmascaramientos
+    masks = [process_card_masking(card_info, match, i) for i in range(1, 9)]
 
-        processed_card1, expiration_month1, expiration_year1 = process_card_masking(card_info, match, 1)
-        processed_card2, expiration_month2, expiration_year2 = process_card_masking(card_info, match, 2)
-        processed_card3, expiration_month3, expiration_year3 = process_card_masking(card_info, match, 3)
-        processed_card4, expiration_month4, expiration_year4 = process_card_masking(card_info, match, 4)
-        processed_card5, expiration_month5, expiration_year5 = process_card_masking(card_info, match, 5)
-        processed_card6, expiration_month6, expiration_year6 = process_card_masking(card_info, match, 6)
-        processed_card7, expiration_month7, expiration_year7 = process_card_masking(card_info, match, 7)
-        processed_card8, expiration_month8, expiration_year8 = process_card_masking(card_info, match, 8)
-         
-        brand = rs.get("brand", "N/A")
-        types = rs.get("type", "N/A")
-        level = rs.get("level", "N/A")
-        bank = rs.get("bank", "N/A")
-        country = rs.get("country_name", "N/A")
-        flag = rs.get("country_flag", "") 
-
-        custom_message = f"""
-✶  𝗖𝗛𝗘𝗥𝗥𝗬’𝗦 𝗘𝗫𝗧𝗥𝗔𝗦  — [#B{card_info[:6]}]
+    custom_message = f"""
+✶  𝗖𝗛𝗘𝗥𝗥𝗬’𝗦 𝗘𝗫𝗧𝗥𝗔𝗦  — [#B{cc[:6]}]
 
 ꩜ 𝖢𝖢: <code>{card_info}</code>
-꩜ 𝖢𝖮𝖴𝖭𝖳𝖱𝖸: <code>{country}</code> <code>[{flag}]</code>
-꩜ 𝖡𝖠𝖭𝖪: <code>{bank}</code>
-꩜ 𝖨𝖭𝖥𝖮: <code>{level}</code> <code>{types}</code> <code>{brand}</code>
+꩜ 𝖢𝖮𝖴𝖭𝖳𝖱𝖸: <code>{bin_info['country_name']}</code> <code>[{bin_info['country_flag']}]</code>
+꩜ 𝖡𝖠𝖭𝖪: <code>{bin_info['bank']}</code>
+꩜ 𝖨𝖭𝖥𝖮: <code>{bin_info['level']}</code> <code>{bin_info['type']}</code> <code>{bin_info['brand']}</code>
 
 ︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶
   —⠀𝖤𝖷𝖳𝖱𝖠𝖯𝖮𝖫𝖠𝖳𝖤𝖣 𝖤𝖷𝖳𝖱𝖠𝖲
 
-➜ <code>{processed_card1}|{expiration_month1}|{expiration_year1}|rnd</code> 
-➜ <code>{processed_card2}|{expiration_month2}|{expiration_year2}|rnd</code>
-➜ <code>{processed_card3}|{expiration_month3}|{expiration_year3}|rnd</code>
-➜ <code>{processed_card4}|{expiration_month4}|{expiration_year4}|rnd</code>
-➜ <code>{processed_card5}|{expiration_month5}|{expiration_year5}|rnd</code>
+➜ <code>{masks[0][0]}|{masks[0][1]}|{masks[0][2]}|rnd</code>
+➜ <code>{masks[1][0]}|{masks[1][1]}|{masks[1][2]}|rnd</code>
+➜ <code>{masks[2][0]}|{masks[2][1]}|{masks[2][2]}|rnd</code>
+➜ <code>{masks[3][0]}|{masks[3][1]}|{masks[3][2]}|rnd</code>
+➜ <code>{masks[4][0]}|{masks[4][1]}|{masks[4][2]}|rnd</code>
 
 ︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶︶
 ᝬ  —⠀𝖣𝖠𝖳𝖠𝖡𝖠𝖲𝖤 𝖤𝖷𝖳𝖱𝖠𝖲
 
-⥤ <code>{processed_card6}|{expiration_month6}|{expiration_year6}|rnd</code>
-⥤ <code>{processed_card7}|{expiration_month7}|{expiration_year7}|rnd</code>
-⥤ <code>{processed_card8}|{expiration_month8}|{expiration_year8}|rnd</code>
+⥤ <code>{masks[5][0]}|{masks[5][1]}|{masks[5][2]}|rnd</code>
+⥤ <code>{masks[6][0]}|{masks[6][1]}|{masks[6][2]}|rnd</code>
+⥤ <code>{masks[7][0]}|{masks[7][1]}|{masks[7][2]}|rnd</code>
 """
 
-        keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("𖥻 INFO", url="https://t.me/infocherrys"), InlineKeyboardButton("𖥻 REFES", url="https://t.me/+oS0yU_A2yGxjMjQ0"))
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(
+        InlineKeyboardButton("𖥻 INFO", url="https://t.me/infocherrys"),
+        InlineKeyboardButton("𖥻 REFES", url="https://t.me/+oS0yU_A2yGxjMjQ0")
+    )
 
+    image_url = random.choice(IMAGES_URL)
 
-        images_rdn_url = random.choice(images_url)
-        
-        payload['text'] = custom_message
-        print(f'[{current_time_str}] {types} CARD: {cc}|{mes}|{years}|{cvv}') 
-        payload['chat_id'] = CHANNEL_ID 
-        payload['reply_markup'] = keyboard 
-        
+    # Control de velocidad
+    async with publication_lock:
+        now = time.monotonic()
+        elapsed = now - last_publication_time
+        if elapsed < PUBLICATION_DELAY:
+            wait = PUBLICATION_DELAY - elapsed
+            print(f"[{current_time_str}] Esperando {wait:.2f}s para publicar {cc}")
+            await asyncio.sleep(wait)
+
         try:
-            # --- CONTROL DE VELOCIDAD GLOBAL (NUEVO) ---
-            async with publication_lock: # Adquiere el lock. Solo una corrutina puede tenerlo a la vez.
-                time_since_last_publication = time.monotonic() - last_publication_time
-                if time_since_last_publication < PUBLICATION_DELAY_SECONDS:
-                    sleep_needed = PUBLICATION_DELAY_SECONDS - time_since_last_publication
-                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Lock adquirido. Esperando {sleep_needed:.2f} segundos antes de publicar {cc}...")
-                    await asyncio.sleep(sleep_needed)
-                
-                # Ahora que hemos esperado, podemos publicar
-                await asyncio.to_thread(
-                    bot.send_photo,
-                    CHANNEL_ID, 
-                    images_rdn_url,
-                    caption=custom_message,
-                    reply_markup=keyboard,
-                    parse_mode='HTML'
-                )
-                
-                # Actualiza el tiempo de la última publicación
-                last_publication_time = time.monotonic() 
-                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Tarjeta {cc} publicada exitosamente. Lock liberado.")
+            await asyncio.to_thread(
+                bot.send_photo,
+                CHANNEL_ID,
+                image_url,
+                caption=custom_message,
+                reply_markup=keyboard,
+                parse_mode='HTML'
+            )
+            last_publication_time = time.monotonic()
+            print(f"[{current_time_str}] Tarjeta {cc} publicada.")
         except Exception as e:
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Error al enviar la foto o mensaje con telebot para {cc}: {e}")
+            print(f"[{current_time_str}] Error al enviar: {e}")
 
-
-# --- Función Principal de Ejecución Asíncrona ---
+# ------------------------------------------------------------
+#  FUNCIÓN PRINCIPAL
+# ------------------------------------------------------------
 async def main():
     global aiohttp_session, last_publication_time
 
     aiohttp_session = aiohttp.ClientSession()
-    last_publication_time = time.monotonic() # Inicializa el tiempo de la última publicación al inicio
+    last_publication_time = time.monotonic()
+
+    # Crear cliente Telethon con sesión persistente
+    if SESSION_STRING:
+        client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+        print("✅ Usando SESSION_STRING guardada.")
+    else:
+        client = TelegramClient("extras", API_ID, API_HASH)
+        print("⚠️  No se encontró SESSION_STRING. Se generará una nueva sesión.")
+        print("   Después de iniciar sesión, copia la cadena de los logs.")
+
+    # Registrar el manejador de eventos
+    client.add_event_handler(card_handler, events.NewMessage())
+    client.add_event_handler(card_handler, events.MessageEdited())
 
     try:
-        await client.start(phone=number) 
-        
-        print("Clientes de Telegram iniciados y escuchando mensajes...")
+        # Iniciar sesión
+        await client.start(phone=PHONE_NUMBER)
+        print("✅ Cliente Telethon conectado.")
 
-        await client.run_until_disconnected() 
+        # Si no había SESSION_STRING, mostrar la cadena para guardarla
+        if not SESSION_STRING:
+            session_str = client.session.save()
+            print("\n" + "="*70)
+            print("🔑 GUARDA ESTA CADENA EN LA VARIABLE DE ENTORNO 'SESSION_STRING':")
+            print(session_str)
+            print("="*70 + "\n")
+            print("📌 En Railway: ve a Settings → Variables y añade SESSION_STRING con este valor.")
+            print("📌 Luego redeploy para que el bot use la sesión persistente.\n")
+
+        print("📡 Escuchando mensajes...")
+        await client.run_until_disconnected()
 
     except PhoneNumberBannedError:
-        print("¡ATENCIÓN! Tu número de teléfono ha sido baneado por Telegram. Por favor, revisa tu cuenta.")
+        print("❌ El número de teléfono está baneado.")
     except Exception as e:
-        print(f"Ocurrió un error inesperado al iniciar o mantener el cliente: {e}.")
+        print(f"❌ Error inesperado: {e}")
     finally:
         if aiohttp_session:
             await aiohttp_session.close()
-            print("Sesión aiohttp cerrada.")
+        await client.disconnect()
 
 if __name__ == '__main__':
     asyncio.run(main())
-
