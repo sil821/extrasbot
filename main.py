@@ -40,11 +40,11 @@ bot = telebot.TeleBot(BOT_TOKEN)
 PROCESSED_CARD_NUMBERS = collections.deque(maxlen=1000)
 
 IMAGES_URL = [
-    'https://i.pinimg.com/736x/4c/e0/6f/4ce06fcebb0a04d909aa1576ec95873f.jpg',
+    'https://i.pinimg.com/736x/db/ca/a2/dbcaa22c8c74547eaf5e2ec8999fb639.jpg',
     'https://i.pinimg.com/736x/77/5c/cf/775ccf064684a7ea0f886b4a47fd23aa.jpg',
     'https://i.pinimg.com/736x/06/55/9b/06559b97ced10e030c88b4028890f7d9.jpg',
-    'https://i.pinimg.com/736x/b9/03/8f/b9038fc97d38e0641750a6cad77dc1f8.jpg',
-    'https://i.pinimg.com/736x/bb/95/bc/bb95bc1086d690e9be03b31e18d15a29.jpg'
+    'https://i.pinimg.com/736x/c1/b7/1b/c1b71b4f424e43bb450dbcc8cf8346be.jpg',
+    'https://i.pinimg.com/1200x/8f/9a/6f/8f9a6fd883d760b10eac247de7a3de71.jpg'
 ]
 
 aiohttp_session = None
