@@ -41,8 +41,8 @@ PROCESSED_CARD_NUMBERS = collections.deque(maxlen=1000)
 
 IMAGES_URL = [
     'https://i.pinimg.com/736x/db/ca/a2/dbcaa22c8c74547eaf5e2ec8999fb639.jpg',
-    'https://i.pinimg.com/736x/77/5c/cf/775ccf064684a7ea0f886b4a47fd23aa.jpg',
-    'https://i.pinimg.com/736x/06/55/9b/06559b97ced10e030c88b4028890f7d9.jpg',
+    'https://i.pinimg.com/736x/d8/5f/64/d85f648851d069e133cfd7a97190c8ef.jpg',
+    'https://i.pinimg.com/736x/9f/69/14/9f69142e7c216b995f166425c5f71888.jpg',
     'https://i.pinimg.com/736x/c1/b7/1b/c1b71b4f424e43bb450dbcc8cf8346be.jpg',
     'https://i.pinimg.com/1200x/8f/9a/6f/8f9a6fd883d760b10eac247de7a3de71.jpg'
 ]
